@@ -2415,7 +2415,7 @@ bool CRenderedTextSubtitle::ParseSSATag( CSubtitle* sub, const AssTagList& assTa
         case CMD_fe:
             {
                 int n = wcstol(p, NULL, 10);
-                if (n < 0) n = DEFAULT_CHARSET;
+                if (n < 0 && n != -2) n = DEFAULT_CHARSET;
                 style.charSet = !p.IsEmpty()
                                 ? n
                                 : org.charSet;
@@ -2969,6 +2969,17 @@ CSubtitle* CRenderedTextSubtitle::GetSubtitle(int entry)
             ParseString(sub, str.Left(i), fw_tmp);
         }
         str = str.Mid(i);
+    }
+    // Encoding -2 has no effect yet: its words are DEFAULT_CHARSET words, as before it was kept
+    for(POSITION pos = sub->m_words.GetHeadPosition(); pos; )
+    {
+        CWord* w = sub->m_words.GetNext(pos).get();
+        if(w->m_style.get().charSet == -2)
+        {
+            STSStyle style = w->m_style.get();
+            style.charSet = DEFAULT_CHARSET;
+            w->m_style = FwSTSStyle(style);
+        }
     }
     if( sub->m_effects[EF_BANNER] || sub->m_effects[EF_SCROLL] )
         sub->m_fAnimated2 = true;
