@@ -22,7 +22,10 @@
 #include "stdafx.h"
 #include <math.h>
 #include <time.h>
+#include <algorithm>
 #include "RTS.h"
+#define FRIBIDI_LIB_STATIC
+#include "fribidi/lib/fribidi-bidi.h"
 #include "draw_item.h"
 #include "cache_manager.h"
 #include "subpixel_position_controler.h"
@@ -171,6 +174,7 @@ CWord::CWord( const CWord& src):m_str(src.m_str)
     m_target_scale_x                             = src.m_target_scale_x;
     m_target_scale_y                             = src.m_target_scale_y;
     m_round_to_whole_pixel_after_scale_to_target = src.m_round_to_whole_pixel_after_scale_to_target;
+    m_levels                                     = src.m_levels;
 }
 
 CWord::~CWord()
@@ -190,6 +194,7 @@ bool CWord::Append(const SharedPtrCWord& w)
     *str  =    m_str.Get();
     *str += w->m_str.Get();
     m_str = XyFwStringW(str);
+    m_levels.insert(m_levels.end(), w->m_levels.begin(), w->m_levels.end());
     m_width += w->m_width;
     return(true);
 }
@@ -652,6 +657,8 @@ bool CText::CreatePath(PathData* path_data)
 
     int width = 0;
     const CStringW& str = m_str.Get();
+    // charSet -2: right-to-left reading order (see CLine::LayOutRtl)
+    bool rtl = m_style.get().charSet == -2;
     if(m_style.get().fontSpacing || (long)GetVersion() < 0)
     {
         bool bFirstPath = true;
@@ -661,7 +668,10 @@ bool CText::CreatePath(PathData* path_data)
             if(!GetTextExtentPoint32W(g_hDC, s, 1, &extent)) {SelectFont(g_hDC, hOldFont); ASSERT(0); return(false);}
             path_data->PartialBeginPath(g_hDC, bFirstPath);
             bFirstPath = false;
-            TextOutW(g_hDC, 0, 0, s, 1);
+            if(rtl)
+                ExtTextOutW(g_hDC, 0, 0, ETO_RTLREADING, NULL, s, 1, NULL);
+            else
+                TextOutW(g_hDC, 0, 0, s, 1);
             path_data->PartialEndPath(g_hDC, width, 0);
             width += extent.cx + (int)m_style.get().fontSpacing;
         }
@@ -679,7 +689,8 @@ bool CText::CreatePath(PathData* path_data)
         {
             SelectFont(g_hDC, hOldFont); ASSERT(0); return(false);
         }
-        succeeded = !!TextOutW(g_hDC, 0, 0, str, str.GetLength());
+        succeeded = rtl ? !!ExtTextOutW(g_hDC, 0, 0, ETO_RTLREADING, NULL, str, str.GetLength(), NULL)
+                        : !!TextOutW(g_hDC, 0, 0, str, str.GetLength());
         if(!succeeded)
         {
             SelectFont(g_hDC, hOldFont); ASSERT(0); return(false);
@@ -720,6 +731,72 @@ void CText::GetTextInfo(TextInfo *output, const FwSTSStyle& style, const CString
     }
     output->m_width = (int)(style.get().fontScaleX/100*output->m_width + 4) >> 3;
     SelectFont(g_hDC, hOldFont);
+}
+
+// CPieces
+
+CStringW CPieces::Key(const std::vector<SharedPtrCWord>& pieces)
+{
+    // \fscx, then the width and text of each piece after U+FFFE (left-to-right) or U+FFFF
+    // (right-to-left), with charSet -3 (CPieces::CPieces): the cache key. CreatePath places the
+    // pieces by their widths, which \fscx changes but the rest of the key does not.
+    CStringW str;
+    str.Format(L"%g", pieces[0]->m_style.get().fontScaleX);
+    for(size_t i = 0; i < pieces.size(); i++)
+        str.AppendFormat(L"%c%d:%s", pieces[i]->m_style.get().charSet == -2 ? 0xFFFF : 0xFFFE
+            , pieces[i]->m_width, (LPCWSTR)pieces[i]->m_str.Get());
+    return str;
+}
+
+CPieces::CPieces(const std::vector<SharedPtrCWord>& pieces)
+    : CWord(pieces[0]->m_style, Key(pieces), pieces[0]->m_ktype, pieces[0]->m_kstart, pieces[0]->m_kend
+        , pieces[0]->m_target_scale_x, pieces[0]->m_target_scale_y)
+    , m_pieces(pieces)
+{
+    // charSet -3 keeps the cache keys apart from those of a CText: ASS and SSA never give a word -3
+    // (they map n < 0 but -2 to DEFAULT_CHARSET). CreatePath uses the pieces' own styles.
+    STSStyle style = m_style.get();
+    style.charSet = -3;
+    m_style = FwSTSStyle(style);
+    for(size_t i = 0; i < pieces.size(); i++)
+    {
+        m_width += pieces[i]->m_width;
+        m_ascent = max(m_ascent, pieces[i]->m_ascent);
+        m_descent = max(m_descent, pieces[i]->m_descent);
+    }
+}
+
+SharedPtrCWord CPieces::Copy()
+{
+    return SharedPtrCWord(DEBUG_NEW CPieces(*this));
+}
+
+bool CPieces::CreatePath(PathData* path_data)
+{
+    // each piece at its x on the line; path units are 1/8 px before \fscx (CText::GetTextInfo)
+    double scalex = m_style.get().fontScaleX/100;
+    int x = 0;
+    for(size_t i = 0; i < m_pieces.size(); x += m_pieces[i++]->m_width)
+    {
+        PathData piece;
+        if(!m_pieces[i]->CreatePath(&piece)) return false;
+        if(!piece.mPathPoints) continue;
+        int n = path_data->mPathPoints + piece.mPathPoints;
+        BYTE* types = (BYTE*)realloc(path_data->mpPathTypes, n * sizeof(BYTE));
+        if(types) path_data->mpPathTypes = types;
+        POINT* points = (POINT*)realloc(path_data->mpPathPoints, n * sizeof(POINT));
+        if(points) path_data->mpPathPoints = points;
+        if(!types || !points) return false;
+        LONG dx = scalex > 0 ? (LONG)(x * 8 / scalex + 0.5) : 0;
+        for(int k = 0; k < piece.mPathPoints; k++)
+        {
+            types[path_data->mPathPoints + k] = piece.mpPathTypes[k];
+            points[path_data->mPathPoints + k].x = piece.mpPathPoints[k].x + dx;
+            points[path_data->mPathPoints + k].y = piece.mpPathPoints[k].y;
+        }
+        path_data->mPathPoints = n;
+    }
+    return true;
 }
 
 // CPolygon
@@ -1168,7 +1245,170 @@ CLine::~CLine()
     //while(pos) delete GetNext(pos);
 }
 
-void CLine::Compact()
+// The code point at str[i] as libass gives it to FriBidi: a surrogate pair is one code point, a
+// tab is a space; i moves past it
+static FriBidiChar NextCodePoint(const CStringW& str, int& i)
+{
+    FriBidiChar c = str[i++];
+    if(IS_HIGH_SURROGATE(c) && i < str.GetLength() && IS_LOW_SURROGATE(str[i]))
+        c = 0x10000 + ((c - 0xD800) << 10) + (str[i++] - 0xDC00);
+    return c == '\t' ? ' ' : c;
+}
+
+// A code point of a line of an Encoding -2 event: characters [first, last) of a word of the line,
+// with its FriBidi bidi type and level
+struct BidiChar {int word, first, last; FriBidiCharType type; int level;};
+
+// Whether b, which is right of a on the line, is drawn in one piece with a. Under \fsp, where
+// CText::CreatePath draws each character on its own, a piece is a run of characters of a word
+// next to each other whose levels have one direction. Otherwise it is a run of characters of a
+// word with one level, which GDI draws in the order of that level (CLine::LayOutRtl).
+// An explicit formatting character (LRE, RLE, LRO, RLO, PDF, LRI, RLI, FSI, PDI) is drawn on its
+// own, as GDI would apply it to the rest of the piece.
+static bool IsSameBidiPiece(const BidiChar& a, const BidiChar& b, bool fsp)
+{
+    if(a.word != b.word || ((a.level ^ b.level) & 1)) return false;
+    if(fsp) return true;
+    return a.level == b.level
+        && !FRIBIDI_IS_EXPLICIT(a.type) && !FRIBIDI_IS_ISOLATE(a.type)
+        && !FRIBIDI_IS_EXPLICIT(b.type) && !FRIBIDI_IS_ISOLATE(b.type)
+        && (a.level & 1 ? b.last == a.first : b.first == a.last);
+}
+
+// Give a word another charSet. In a right-to-left event, -2 makes CText::CreatePath draw the word
+// right-to-left; GDI gets DEFAULT_CHARSET for it.
+static void SetCharSet(const SharedPtrCWord& w, int charSet)
+{
+    if(w->m_style.get().charSet != charSet)
+    {
+        STSStyle style = w->m_style.get();
+        style.charSet = charSet;
+        w->m_style = FwSTSStyle(style);
+    }
+}
+
+// Lay out a line of an Encoding -2 event (right-to-left base direction) by the bidi levels its
+// characters got over the whole event (CRenderedTextSubtitle::GetSubtitle): the characters go in
+// the order fribidi_reorder_line gives, for the line and again after each paragraph separator in
+// it, as in libass, and each word is cut into pieces (IsSameBidiPiece), each drawn in the
+// direction of its level. This is the order libass gives such an event with
+// ASS_FEATURE_WHOLE_TEXT_LAYOUT. Pieces of one word next to each other are drawn as one word
+// (CPieces), as one run is in libass: one outline, shadow, BorderStyle 3 box and \fay shear.
+void CLine::LayOutRtl()
+{
+    CAtlArray<SharedPtrCWord> words;
+    std::vector<BidiChar> chars;
+    std::vector<FriBidiChar> text;
+    std::vector<FriBidiLevel> levels;
+    POSITION pos = GetHeadPosition();
+    while(pos)
+    {
+        SharedPtrCWord w = GetNext(pos);
+        const CStringW& str = w->m_str.Get();
+        bool istext = !!boost::dynamic_pointer_cast<CText>(w);
+        BidiChar c = {(int)words.Add(w), 0, 0, 0, 1};
+        for(; c.first < str.GetLength(); c.first = c.last)
+        {
+            c.last = c.first;
+            if(istext) text.push_back(NextCodePoint(str, c.last));
+            else {text.push_back(0xFFFC); c.last = str.GetLength();} // a drawing, as in libass
+            if(c.first < (int)w->m_levels.size()) c.level = w->m_levels[c.first];
+            chars.push_back(c);
+            levels.push_back((FriBidiLevel)c.level);
+        }
+    }
+    int n = (int)chars.size();
+    if(n == 0) return;
+    std::vector<FriBidiCharType> types(n);
+    std::vector<FriBidiStrIndex> order(n);
+    fribidi_get_bidi_types(&text[0], n, &types[0]);
+    for(int i = 0; i < n; i++) order[i] = i;
+    for(int s = 0, e; s < n; s = e)
+    {
+        for(e = s; e < n && types[e++] != FRIBIDI_TYPE_BS; ) ;
+        fribidi_reorder_line(0, &types[0], e - s, s, FRIBIDI_PAR_RTL, &levels[0], NULL, &order[0]);
+    }
+    for(int i = 0; i < n; i++)
+    {
+        chars[i].type = types[i];
+        chars[i].level = levels[i];
+    }
+    std::vector<int> piece_word, pieces(words.GetCount(), 0); // word of each unit; units of a word
+    std::vector<SharedPtrCWord> group; // pieces of one word next to each other
+    RemoveAll();
+    m_width = 0;
+    for(int i = 0, j; i < n; i = j)
+    {
+        const BidiChar& c = chars[order[i]];
+        SharedPtrCWord w = words[c.word];
+        const CStringW& wstr = w->m_str.Get();
+        bool istext = !!boost::dynamic_pointer_cast<CText>(w);
+        bool fsp = istext && w->m_style.get().fontSpacing;
+        for(j = i + 1; j < n && IsSameBidiPiece(chars[order[j-1]], chars[order[j]], fsp); ) j++;
+        const BidiChar& d = chars[order[j-1]];
+        CStringW str, marks;
+        if(fsp) // the characters in screen order, but a combining mark after its base
+        {
+            for(int k = i; k < j; k++)
+            {
+                const BidiChar& e = chars[order[k]];
+                CStringW s = wstr.Mid(e.first, e.last - e.first);
+                if(e.level & 1 && e.type == FRIBIDI_TYPE_NSM) marks = s + marks;
+                else {str += s + marks; marks.Empty();}
+            }
+            str += marks;
+        }
+        else
+            str = wstr.Mid(min(c.first, d.first), max(c.last, d.last) - min(c.first, d.first));
+        // GDI orders a piece by its own bidi algorithm, which puts it in the order of its level unless an
+        // override (RLO, LRO) gave a character a level against its type: then the override again
+        // (U+202E RLO or U+202D LRO, U+202C PDF)
+        bool forced = false;
+        for(int k = i; k < j && istext && !fsp && !forced; k++)
+        {
+            FriBidiCharType t = chars[order[k]].type;
+            forced = c.level & 1 ? t == FRIBIDI_TYPE_LTR || FRIBIDI_IS_NUMBER(t)
+                               : t == FRIBIDI_TYPE_RTL || t == FRIBIDI_TYPE_AL;
+        }
+        if(forced)
+            str = (c.level & 1 ? L"\x202E" : L"\x202D") + str + L"\x202C";
+        if(str != wstr)
+            w.reset(DEBUG_NEW CText(w->m_style, str, w->m_ktype, w->m_kstart, w->m_kend
+                , w->m_target_scale_x, w->m_target_scale_y));
+        SetCharSet(w, c.level & 1 ? -2 : DEFAULT_CHARSET);
+        group.push_back(w);
+        m_width += w->m_width;
+        if(j < n && chars[order[j]].word == c.word) continue;
+        AddTail(group.size() > 1 ? SharedPtrCWord(DEBUG_NEW CPieces(group)) : w);
+        group.clear();
+        piece_word.push_back(c.word);
+        pieces[c.word]++;
+    }
+    // \kf on a word in several units: one sweep from left to right across its units, each
+    // filling for a part of the syllable as long as its part of the width of the word
+    pos = GetHeadPosition();
+    for(size_t i = 0; pos; i++)
+    {
+        SharedPtrCWord w = GetNext(pos);
+        const SharedPtrCWord& src = words[piece_word[i]];
+        if(src->m_ktype != 1 || pieces[piece_word[i]] < 2) continue;
+        int width = 0, before = 0;
+        POSITION pos2 = GetHeadPosition();
+        for(size_t k = 0; pos2; k++)
+        {
+            const SharedPtrCWord& v = GetNext(pos2);
+            if(piece_word[k] != piece_word[i]) continue;
+            if(k < i) before += v->m_width;
+            width += v->m_width;
+        }
+        if(width <= 0) continue;
+        int duration = max(src->m_kend - src->m_kstart, 0);
+        w->m_kstart = src->m_kstart + MulDiv(duration, before, width);
+        w->m_kend   = src->m_kstart + MulDiv(duration, before + w->m_width, width);
+    }
+}
+
+void CLine::Compact(bool rtl)
 {
     POSITION pos = GetHeadPosition();
     while(pos)
@@ -1200,6 +1440,7 @@ void CLine::Compact()
         if(!last || !last->Append(w))
             AddTail(last = w->Copy());
     }
+    if(rtl) LayOutRtl();
     m_ascent = m_descent = m_borderX = m_borderY = 0;
     pos = GetHeadPosition();
     while(pos)
@@ -1378,6 +1619,7 @@ CSubtitle::CSubtitle()
     m_clipInverse = false;
     m_scalex = m_scaley = 1;
     m_fAnimated2 = false;
+    m_rtl = false;
 
     m_target_scale_x = m_target_scale_y = 1.0;
     m_hard_position_level = -1;
@@ -1468,7 +1710,7 @@ CLine* CSubtitle::GetNextLine(POSITION& pos, int maxwidth)
         if(w->m_fLineBreak)
         {
             if(fEmptyLine) {ret->m_ascent /= 2; ret->m_descent /= 2; ret->m_borderX = ret->m_borderY = 0;}
-            ret->Compact();
+            ret->Compact(m_rtl);
             return(ret);
         }
         fEmptyLine = false;
@@ -1499,7 +1741,7 @@ CLine* CSubtitle::GetNextLine(POSITION& pos, int maxwidth)
             break;
         }
     }
-    ret->Compact();
+    ret->Compact(m_rtl);
     return(ret);
 }
 
@@ -2415,7 +2657,7 @@ bool CRenderedTextSubtitle::ParseSSATag( CSubtitle* sub, const AssTagList& assTa
         case CMD_fe:
             {
                 int n = wcstol(p, NULL, 10);
-                if (n < 0) n = DEFAULT_CHARSET;
+                if (n < 0 && n != -2) n = DEFAULT_CHARSET;
                 style.charSet = !p.IsEmpty()
                                 ? n
                                 : org.charSet;
@@ -2969,6 +3211,65 @@ CSubtitle* CRenderedTextSubtitle::GetSubtitle(int entry)
             ParseString(sub, str.Left(i), fw_tmp);
         }
         str = str.Mid(i);
+    }
+    // The last \fe of the event, or the style's Encoding, sets the direction of the event.
+    // Encoding has no other part in its layout: in a right-to-left event every word gets -2 (and
+    // GDI DEFAULT_CHARSET) until CLine::LayOutRtl gives each piece its direction; in other events
+    // -2 is DEFAULT_CHARSET, as before -2 had a meaning.
+    sub->m_rtl = stss.charSet == -2;
+    std::vector<FriBidiChar> text; // right-to-left event: its code points, for FriBidi
+    for(POSITION pos = sub->m_words.GetHeadPosition(); pos; )
+    {
+        POSITION cur = pos;
+        SharedPtrCWord w = sub->m_words.GetNext(pos);
+        int charSet = w->m_style.get().charSet;
+        if(sub->m_rtl && charSet != -2 && charSet != DEFAULT_CHARSET && boost::dynamic_pointer_cast<CText>(w))
+        {
+            // GDI can pick another font for DEFAULT_CHARSET than for charSet: measure the word again
+            STSStyle style = w->m_style.get();
+            style.charSet = -2;
+            sub->m_words.SetAt(cur, w = SharedPtrCWord(DEBUG_NEW CText(FwSTSStyle(style), w->m_str.Get()
+                , w->m_ktype, w->m_kstart, w->m_kend, w->m_target_scale_x, w->m_target_scale_y)));
+        }
+        else
+            SetCharSet(w, sub->m_rtl ? -2 : charSet == -2 ? DEFAULT_CHARSET : charSet);
+        if(!sub->m_rtl) continue;
+        // as in libass: \N (a line break word) is U+2029, which ends a paragraph; a drawing U+FFFC
+        const CStringW& str = w->m_str.Get();
+        if(w->m_fLineBreak) text.push_back(0x2029);
+        else if(!boost::dynamic_pointer_cast<CText>(w)) text.push_back(0xFFFC);
+        else for(int i = 0; i < str.GetLength(); ) text.push_back(NextCodePoint(str, i));
+    }
+    if(!text.empty())
+    {
+        // the bidi level of each character of the event, for CLine::LayOutRtl: FriBidi as libass
+        // uses it, a right-to-left paragraph up to each paragraph separator
+        int n = (int)text.size();
+        std::vector<FriBidiCharType> types(n);
+        std::vector<FriBidiLevel> levels(n, 1);
+        fribidi_get_bidi_types(&text[0], n, &types[0]);
+        for(int s = 0, e; s < n; s = e)
+        {
+            for(e = s; e < n && types[e++] != FRIBIDI_TYPE_BS; ) ;
+            FriBidiParType dir = FRIBIDI_PAR_RTL;
+            if(!fribidi_get_par_embedding_levels_ex(&types[s], NULL, e - s, &dir, &levels[s]))
+                std::fill(levels.begin() + s, levels.begin() + e, (FriBidiLevel)1); // out of memory
+        }
+        int k = 0;
+        for(POSITION pos = sub->m_words.GetHeadPosition(); pos; )
+        {
+            SharedPtrCWord w = sub->m_words.GetNext(pos);
+            const CStringW& str = w->m_str.Get();
+            if(w->m_fLineBreak) {k++; continue;}
+            if(!boost::dynamic_pointer_cast<CText>(w)) {w->m_levels.assign(1, levels[k++]); continue;}
+            w->m_levels.resize(str.GetLength());
+            for(int i = 0; i < str.GetLength(); k++)
+            {
+                int first = i;
+                NextCodePoint(str, i);
+                while(first < i) w->m_levels[first++] = levels[k];
+            }
+        }
     }
     if( sub->m_effects[EF_BANNER] || sub->m_effects[EF_SCROLL] )
         sub->m_fAnimated2 = true;

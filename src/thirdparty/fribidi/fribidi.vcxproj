@@ -1,0 +1,79 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectName>fribidi</ProjectName>
+    <ProjectGuid>{158FC670-F996-4F6F-9B48-C2282B28FE9B}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <Import Project="..\..\configuration.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\..\common.props" />
+  </ImportGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>lib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>_LIB;FRIBIDI_LIB_STATIC;FRIBIDI_BUILD;HAVE_STRINGIZE;HAVE_STDLIB_H=1;HAVE_STRING_H=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <UndefinePreprocessorDefinitions>DEBUG;%(UndefinePreprocessorDefinitions)</UndefinePreprocessorDefinitions>
+      <DisableSpecificWarnings>4018;4244;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="lib\fribidi-bidi-types.c" />
+    <ClCompile Include="lib\fribidi-bidi.c" />
+    <ClCompile Include="lib\fribidi-run.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="lib\bidi-types.h" />
+    <ClInclude Include="lib\common.h" />
+    <ClInclude Include="lib\debug.h" />
+    <ClInclude Include="lib\fribidi-begindecls.h" />
+    <ClInclude Include="lib\fribidi-bidi-types-list.h" />
+    <ClInclude Include="lib\fribidi-bidi-types.h" />
+    <ClInclude Include="lib\fribidi-bidi.h" />
+    <ClInclude Include="lib\fribidi-brackets.h" />
+    <ClInclude Include="lib\fribidi-common.h" />
+    <ClInclude Include="lib\fribidi-config.h" />
+    <ClInclude Include="lib\fribidi-enddecls.h" />
+    <ClInclude Include="lib\fribidi-flags.h" />
+    <ClInclude Include="lib\fribidi-mirroring.h" />
+    <ClInclude Include="lib\fribidi-types.h" />
+    <ClInclude Include="lib\fribidi-unicode-version.h" />
+    <ClInclude Include="lib\fribidi-unicode.h" />
+    <ClInclude Include="lib\run.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="lib\bidi-type.tab.i" />
+    <None Include="README.txt" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

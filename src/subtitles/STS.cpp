@@ -1227,6 +1227,7 @@ static STSStyle* GetMicroDVDStyle(CString str, int CharSet)
         else if(!_tcsnicmp(code, _T("{h:"), 3))
         {
             _stscanf_s(code, _T("{h:%d"), &ret->charSet);
+            if(ret->charSet == -2) ret->charSet = DEFAULT_CHARSET; // -2 is for ASS/SSA only
         }
         else if(!_tcsnicmp(code, _T("{y:"), 3))
         {
@@ -1313,6 +1314,7 @@ static CStringW MicroDVD2SSA(CStringW str, bool fUnicode, int CharSet)
 
                     int iCharSet;
                     swscanf_s(code, L"{h:%d", &iCharSet);
+                    if(iCharSet == -2) iCharSet = DEFAULT_CHARSET; // -2 is for ASS/SSA only
                     code.Format(L"{\\fe%d}", iCharSet);
                     ret += code;
                 }
@@ -2006,8 +2008,9 @@ if(sver <= 4)   alpha = GetInt(buff);
                 encoding = GetInt(buff);
 if(sver >= 6)   style->relativeTo = GetInt(buff);
 
-                // Map unsupported extension to the most permissive charSet
-                style->charSet = encoding < 0 ? DEFAULT_CHARSET : encoding;
+                // Map unsupported extension to the most permissive charSet.
+                // -2 (right-to-left base direction) is kept and only mapped for the font.
+                style->charSet = encoding < 0 && encoding != -2 ? DEFAULT_CHARSET : encoding;
 if(sver <= 4)   style->colors[2] = style->colors[3]; // style->colors[2] is used for drawing the outline
 if(sver <= 4)   alpha = max(min(alpha, 0xff), 0);
 if(sver <= 4)   {for(size_t i = 0; i < 3; i++) style->alpha[i] = alpha; style->alpha[3] = 0x80;}
@@ -2248,6 +2251,7 @@ static bool OpenXombieSub(CTextFile* file, CSimpleTextSubtitle& ret, int CharSet
                 style->marginRect = tmp_rect;
 
                 style->charSet = GetInt(buff);
+                if(style->charSet == -2) style->charSet = DEFAULT_CHARSET; // -2 is for ASS/SSA only
 
                 style->fontScaleX = max(style->fontScaleX, 0);
                 style->fontScaleY = max(style->fontScaleY, 0);
@@ -3704,7 +3708,7 @@ void STSStyle::operator = (const LOGFONT& lf)
 
 LOGFONTA& operator <<= (LOGFONTA& lfa, const STSStyleBase& s)
 {
-    lfa.lfCharSet = s.charSet;
+    lfa.lfCharSet = s.charSet == -2 ? DEFAULT_CHARSET : s.charSet;
     strncpy_s(lfa.lfFaceName, LF_FACESIZE, CStringA(s.fontName), _TRUNCATE);
     HDC hDC = GetDC(0);
     lfa.lfHeight = -MulDiv((int)(s.fontSize+0.5), GetDeviceCaps(hDC, LOGPIXELSY), 72);
@@ -3718,7 +3722,7 @@ LOGFONTA& operator <<= (LOGFONTA& lfa, const STSStyleBase& s)
 
 LOGFONTW& operator <<= (LOGFONTW& lfw, const STSStyleBase& s)
 {
-    lfw.lfCharSet = s.charSet;
+    lfw.lfCharSet = s.charSet == -2 ? DEFAULT_CHARSET : s.charSet;
     wcsncpy_s(lfw.lfFaceName, LF_FACESIZE, CStringW(s.fontName), _TRUNCATE);
     HDC hDC = GetDC(0);
     lfw.lfHeight = -MulDiv((int)(s.fontSize+0.5), GetDeviceCaps(hDC, LOGPIXELSY), 72);
