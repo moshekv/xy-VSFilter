@@ -26,6 +26,7 @@
 #include "../SubPic/SubPicProviderImpl.h"
 #include "../SubPic/ISimpleSubPic.h"
 #include <atlcoll.h>
+#include <vector>
 #include <boost/flyweight/key_value.hpp>
 #include <boost/smart_ptr.hpp>
 #include "mru_cache.h"
@@ -110,14 +111,18 @@ public:
     int               m_width, m_ascent, m_descent;
     double            m_target_scale_x, m_target_scale_y;
     bool              m_round_to_whole_pixel_after_scale_to_target;//it is necessary to avoid some artifacts
+    std::vector<BYTE> m_levels; //Encoding -2: bidi level of each character
 
     //friend class CWordCache;
+    friend class CPieces;
     friend class PathDataCacheKey;
     friend class ClipperTraits;
     friend class ClipperAlphaMaskCacheKey;
     friend class CWordPaintMachine;
     friend class CWordPaintResultKey;
     friend class CClipper;
+    friend class CLine;
+    friend class CRenderedTextSubtitle;
 };
 
 class CText : public CWord
@@ -170,6 +175,20 @@ public:
     friend class ClipperTraits;
     friend class ClipperAlphaMaskCacheKey;
     friend class PathDataCacheKey;
+};
+
+// Encoding -2: pieces of one word next to each other on a line (CLine::LayOutRtl), drawn as one
+// word, so that they get one outline, shadow, BorderStyle 3 box and \fay shear, as the word had
+class CPieces : public CWord
+{
+    std::vector<SharedPtrCWord> m_pieces;
+    static CStringW Key(const std::vector<SharedPtrCWord>& pieces);
+protected:
+    virtual bool CreatePath(PathData* path_data);
+public:
+    CPieces(const std::vector<SharedPtrCWord>& pieces);
+    virtual SharedPtrCWord Copy();
+    virtual bool Append(const SharedPtrCWord& w) {return false;}
 };
 
 enum eftype
@@ -234,12 +253,14 @@ public:
 
 class CLine: private CAtlList<SharedPtrCWord>
 {
+    void LayOutRtl();
+
 public:
     int m_width, m_ascent, m_descent, m_borderX, m_borderY;
 
     virtual ~CLine();
 
-    void Compact();
+    void Compact(bool rtl);
 
     int GetWordCount();
     void AddWord2Tail(SharedPtrCWord words);
@@ -263,6 +284,7 @@ public:
     int                      m_wrapStyle;
     bool                     m_fAnimated;
     bool                     m_fAnimated2; //If this Subtitle has animate effect
+    bool                     m_rtl; //Encoding -2: right-to-left base direction
     int                      m_relativeTo;
     Effect*                  m_effects[EF_NUMBEROFEFFECTS];
     CAtlList<SharedPtrCWord> m_words;
